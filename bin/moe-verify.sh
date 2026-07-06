@@ -3,15 +3,38 @@
 # moe-verify.sh — MOE local verification gate.
 #
 # Local mirror of the MOE Reusable Skill Cards (.moe/README.md §4).
-# Audits the current git working diff (staged + unstaged vs HEAD) against the
-# core invariant rules. Exit code 0 = all gates passed, 1 = one or more gates
-# failed, 2 = environment cannot be verified (not a git repo / no commits).
+# Audits changes against the core invariant rules. Exit code 0 = all gates
+# passed, 1 = one or more gates failed, 2 = environment cannot be verified
+# (not a git repo / no commits / bad arguments).
+#
+# Modes:
+#   diff (default)  audit the working diff (staged + unstaged vs base ref)
+#                   plus untracked files — fast pre-commit check
+#   --full          audit every tracked + untracked file in the repository —
+#                   whole-repo compliance sweep (e.g. after adopting MOE in an
+#                   existing codebase, or as a periodic invariant audit)
 #
 # Usage:
-#   ./bin/moe-verify.sh            # verify working tree changes vs HEAD
-#   MOE_BASE_REF=main ./bin/moe-verify.sh   # verify vs a base ref instead
+#   ./bin/moe-verify.sh                     # diff mode vs HEAD
+#   MOE_BASE_REF=main ./bin/moe-verify.sh   # diff mode vs a base ref
+#   ./bin/moe-verify.sh --full              # full-repository audit
 #
 set -euo pipefail
+
+MODE="diff"
+for arg in "$@"; do
+  case "$arg" in
+    --full) MODE="full" ;;
+    -h|--help)
+      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      printf 'Unknown argument: %s (supported: --full, --help)\n' "$arg" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Setup & reporting
@@ -57,7 +80,11 @@ if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
 fi
 
 printf 'Repository : %s\n' "$REPO_ROOT"
-printf 'Base ref   : %s\n\n' "$BASE_REF"
+if [ "$MODE" = "full" ]; then
+  printf 'Mode       : FULL repository audit (all tracked + untracked files)\n\n'
+else
+  printf 'Mode       : diff vs %s\n\n' "$BASE_REF"
+fi
 
 # Full diff of tracked changes (staged + unstaged) plus untracked files.
 diff_all() {
@@ -75,13 +102,39 @@ added_lines() {
   '
 }
 
-CHANGED_FILES=$( { git diff --name-only "$BASE_REF" --; git ls-files --others --exclude-standard; } | sort -u )
-ADDED=$(added_lines)
+# Every line of every audited file, prefixed "path:line-content" (full mode).
+all_lines() {
+  { git ls-files; git ls-files --others --exclude-standard; } | sort -u \
+    | while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        grep -I -H '' "$f" 2>/dev/null || true
+      done
+}
 
-if [ -z "$CHANGED_FILES" ]; then
-  printf '%s[INFO]%s No changes detected vs %s — nothing to verify.\n' "$YELLOW" "$RESET" "$BASE_REF"
-  exit 0
+if [ "$MODE" = "full" ]; then
+  CHANGED_FILES=$( { git ls-files; git ls-files --others --exclude-standard; } | sort -u )
+  ADDED=$(all_lines)
+  if [ -z "$CHANGED_FILES" ]; then
+    printf '%s[INFO]%s Repository contains no files — nothing to verify.\n' "$YELLOW" "$RESET"
+    exit 0
+  fi
+else
+  CHANGED_FILES=$( { git diff --name-only "$BASE_REF" --; git ls-files --others --exclude-standard; } | sort -u )
+  ADDED=$(added_lines)
+  if [ -z "$CHANGED_FILES" ]; then
+    printf '%s[INFO]%s No changes detected vs %s — nothing to verify.\n' "$YELLOW" "$RESET" "$BASE_REF"
+    exit 0
+  fi
 fi
+
+# The enforcement engines define the very signatures they hunt, so their own
+# lines must not be pattern-scanned (they would self-match). Documentation
+# (.md) quotes forbidden patterns descriptively and is not executable, so it
+# is excluded from the code-execution gates (5, 5b, 6) but NOT from the
+# secret scan — a real credential pasted into a doc is still a leak.
+ENFORCEMENT_SELF='^(bin/moe-verify\.sh|\.github/workflows/enterprise-agent-gate\.yml):'
+CODE_LINES=$(printf '%s\n' "$ADDED" | grep -v -E "$ENFORCEMENT_SELF" || true)
+EXEC_LINES=$(printf '%s\n' "$CODE_LINES" | grep -v -E '^[^:]*\.(md|markdown|txt):' || true)
 
 # ---------------------------------------------------------------------------
 # GATE 1 — SKILL-002 AST-COMPILATION-VERIFIER (implicit-any + type surface)
@@ -90,7 +143,7 @@ fi
 GATE1="Gate 1: Implicit-any / type-safety scan (SKILL-002)"
 TS_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | grep -E '\.(ts|tsx|mts|cts)$' || true)
 if [ -z "$TS_CHANGED" ]; then
-  skip "$GATE1" "no TypeScript files changed"
+  skip "$GATE1" "no TypeScript files in audit scope"
 else
   ANY_HITS=$(printf '%s\n' "$ADDED" \
     | grep -E '\.(ts|tsx|mts|cts):' \
@@ -119,7 +172,7 @@ fi
 
 GATE2="Gate 2: High-entropy credential shield (SKILL-003)"
 SECRET_REGEX='(sk_live_[0-9a-zA-Z]{10,}|sk-ant-[0-9a-zA-Z_-]{10,}|AIzaSy[0-9A-Za-z_-]{20,}|xoxb-[0-9A-Za-z-]{10,}|xapp-[0-9A-Za-z-]{10,}|AKIA[0-9A-Z]{16}|ghp_[0-9A-Za-z]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(postgres|postgresql|mysql|mongodb(\+srv)?|redis|amqp)://[^/[:space:]:@]+:[^@[:space:]]+@|DATABASE_URL=[^[:space:]]*://[^[:space:]]*:[^[:space:]]*@)'
-SECRET_HITS=$(printf '%s\n' "$ADDED" | grep -E "$SECRET_REGEX" || true)
+SECRET_HITS=$(printf '%s\n' "$CODE_LINES" | grep -E "$SECRET_REGEX" || true)
 if [ -n "$SECRET_HITS" ]; then
   fail "$GATE2" "Hardcoded secrets, credentials, or live API keys detected (invariant #2):
 $SECRET_HITS
@@ -152,7 +205,7 @@ else
 fi
 
 GATE2C="Gate 2c: Unsafe environment variable exposure (SKILL-003)"
-ENV_EXPOSURE=$(printf '%s\n' "$ADDED" \
+ENV_EXPOSURE=$(printf '%s\n' "$EXEC_LINES" \
   | grep -E '(console\.(log|info|warn|error|debug)|logger\.[a-z]+|print\(|println!)\s*\(.*process\.env|NEXT_PUBLIC_[A-Z_]*(SECRET|KEY|TOKEN|PASSWORD)|VITE_[A-Z_]*(SECRET|KEY|TOKEN|PASSWORD)|REACT_APP_[A-Z_]*(SECRET|KEY|TOKEN|PASSWORD)' \
   | grep -v -E 'moe:allow-env' || true)
 if [ -n "$ENV_EXPOSURE" ]; then
@@ -170,7 +223,7 @@ GATE3="Gate 3: Schema/migration lockstep (invariant #3)"
 SCHEMA_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | grep -E '(^|/)schema\.prisma$' || true)
 MIGRATIONS_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | grep -E '(^|/)(prisma/)?migrations/.*\.sql$' || true)
 if [ -z "$SCHEMA_CHANGED" ]; then
-  skip "$GATE3" "no schema.prisma changes in diff"
+  skip "$GATE3" "no schema.prisma in audit scope"
 elif [ -z "$MIGRATIONS_CHANGED" ]; then
   fail "$GATE3" "schema.prisma changed but no migration .sql files accompany it.
 Generate the migration in the same change set (e.g. prisma migrate dev)."
@@ -180,7 +233,7 @@ fi
 
 GATE3B="Gate 3b: Zero-downtime migration sanity (expand-and-contract)"
 if [ -z "$MIGRATIONS_CHANGED" ]; then
-  skip "$GATE3B" "no migration files changed"
+  skip "$GATE3B" "no migration files in audit scope"
 else
   UNSAFE_SQL=$(printf '%s\n' "$ADDED" \
     | grep -E 'migrations/.*\.sql:' \
@@ -202,7 +255,7 @@ fi
 
 GATE4="Gate 4: Row Level Security sanity (SKILL-004)"
 if [ -z "$SCHEMA_CHANGED" ]; then
-  skip "$GATE4" "no schema.prisma changes in diff"
+  skip "$GATE4" "no schema.prisma in audit scope"
 else
   NEW_MODELS=$(printf '%s\n' "$ADDED" | grep -E 'schema\.prisma:model ' | sed -E 's/.*schema\.prisma:model +([A-Za-z0-9_]+).*/\1/' | sort -u || true)
   if [ -z "$NEW_MODELS" ]; then
@@ -221,7 +274,7 @@ else
         fi
       done
     done
-    RUNTIME_RLS=$(printf '%s\n' "$ADDED" | grep -v -E 'migrations/.*\.sql:' | grep -E 'ENABLE ROW LEVEL SECURITY|CREATE POLICY' || true)
+    RUNTIME_RLS=$(printf '%s\n' "$EXEC_LINES" | grep -v -E 'migrations/.*\.sql:' | grep -E 'ENABLE ROW LEVEL SECURITY|CREATE POLICY' || true)
     if [ -n "$RUNTIME_RLS" ]; then
       RLS_ISSUES+="RLS commands found inside application runtime files — they must live in version-controlled migration scripts:"$'\n'"$RUNTIME_RLS"$'\n'
     fi
@@ -239,7 +292,7 @@ fi
 
 GATE5="Gate 5: PII leak interception (SKILL-005)"
 PII_FIELDS='(email|e_mail|ssn|social_security|phone(Number|_number)?|firstName|first_name|lastName|last_name|fullName|full_name|dateOfBirth|date_of_birth|creditCard|credit_card|cardNumber|card_number|billingToken|billing_token|passport|driverLicense|driver_license|taxId|tax_id)'
-PII_HITS=$(printf '%s\n' "$ADDED" \
+PII_HITS=$(printf '%s\n' "$EXEC_LINES" \
   | grep -E "(console\.(log|info|warn|error|debug)|logger\.(info|warn|error|debug|log|trace)|print\(|println!|logging\.[a-z]+)\s*\(.*${PII_FIELDS}" \
   | grep -v -E '(mask|hash|redact|anonymi[sz]e|obfuscat)' \
   | grep -v -E 'moe:allow-pii' || true)
@@ -252,9 +305,9 @@ else
 fi
 
 GATE5B="Gate 5b: Insecure transport for data paths (SKILL-005)"
-HTTP_HITS=$(printf '%s\n' "$ADDED" \
+HTTP_HITS=$(printf '%s\n' "$EXEC_LINES" \
   | grep -E '["'"'"']http://(?!localhost|127\.0\.0\.1|0\.0\.0\.0)' -P 2>/dev/null \
-  || printf '%s\n' "$ADDED" | grep -E '["'"'"']http://' | grep -v -E 'localhost|127\.0\.0\.1|0\.0\.0\.0' || true)
+  || printf '%s\n' "$EXEC_LINES" | grep -E '["'"'"']http://' | grep -v -E 'localhost|127\.0\.0\.1|0\.0\.0\.0' || true)
 if [ -n "$HTTP_HITS" ]; then
   fail "$GATE5B" "Non-TLS endpoints introduced — personal data transport must use HTTPS:
 $HTTP_HITS"
@@ -267,7 +320,7 @@ fi
 # ---------------------------------------------------------------------------
 
 GATE6="Gate 6: Multi-tenant authorization constraints (invariant #7)"
-BYPASS_HITS=$(printf '%s\n' "$ADDED" \
+BYPASS_HITS=$(printf '%s\n' "$EXEC_LINES" \
   | grep -E '(bypassBillingVerification\s*=\s*true|bypassTenantIsolation\s*=\s*true|skipAuthCheck\s*=\s*true|SKIP_TENANT_ISOLATION\s*=\s*(true|1))' || true)
 if [ -n "$BYPASS_HITS" ]; then
   fail "$GATE6" "Authorization bypass patterns detected:

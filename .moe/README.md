@@ -322,8 +322,13 @@ machine exactly. No state may be skipped; no transition may be improvised.
 Run the local gate before every commit:
 
 ```sh
-./bin/moe-verify.sh
+./bin/moe-verify.sh          # audit the working diff (fast pre-commit check)
+./bin/moe-verify.sh --full   # audit every tracked + untracked file in the repo
 ```
+
+Diff mode is the pre-commit gate. Full mode sweeps the entire repository
+against the same skill-card gates — use it when adopting MOE in an existing
+codebase, after large merges, or as a periodic compliance audit.
 
 A merge is legal only when **both** engines return green and all consensus
 tokens (§6.3) are present.
