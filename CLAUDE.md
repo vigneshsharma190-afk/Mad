@@ -12,6 +12,11 @@ These rules are mandatory for every session.
   structural-integrity, or compliance/security work, load the matching agent
   profile from `.moe/profiles/` and operate within its stated boundaries and
   failure-mode watchlist.
+- Real, spawnable project subagents live in `.claude/agents/` (one per MOE
+  role, with scoped tool access). Prefer spawning them via the Agent tool for
+  role-bounded work. `.moe/profiles/` remains the source-of-truth
+  documentation layer — if a subagent file and its profile diverge, the
+  profile wins and the subagent file must be updated to match.
 
 ## Verification discipline
 
