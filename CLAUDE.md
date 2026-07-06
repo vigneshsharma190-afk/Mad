@@ -33,10 +33,11 @@ These rules are mandatory for every session.
 ## Branch and merge discipline
 
 - Use feature branches and pull requests for all non-emergency changes.
-- Never push directly to `main` unless explicitly approved for emergency
-  recovery. The CI gate triggers on `pull_request` only — a direct push
-  receives zero automated verification.
+- Never push directly to `main` — the active repository ruleset rejects
+  direct pushes; the PR path is the only path. Emergency recovery requires
+  deliberately editing the ruleset first.
 - A PR is mergeable only when both the local gate and the
-  `verify-architecture-invariants` status check are green. Remote merge
-  blocking is not yet enforced by GitHub (see `.moe/README.md` §8), so this
-  discipline is load-bearing.
+  `verify-architecture-invariants` status check are green. GitHub enforces
+  this via an active ruleset on `main` with no bypass actors (verified by
+  red-gate test — see `.moe/README.md` §8); local verification remains
+  mandatory as the first line of defense.
