@@ -337,73 +337,66 @@ tokens (§6.3) are present.
 
 ## 8. Current Enforcement State
 
-**Verified working:** the `Enterprise Multi-Agent Integrity Gate` workflow runs
-successfully on every pull request into `main`, `master`, or `release/*`. The
-exact status check name reported on PRs is **`verify-architecture-invariants`**
-(first confirmed passing on
-[PR #1](https://github.com/vigneshsharma190-afk/Mad/pull/1)).
+**Remote enforcement is ACTIVE and merge-blocking.** A repository ruleset
+named `main` (enforcement: active, zero bypass actors) targets the `main`
+branch and requires the **`verify-architecture-invariants`** status check to
+pass before any merge. A failing MOE gate does not merely mark the PR red —
+GitHub physically disables the merge for everyone, including repository
+admins.
 
-**Known limitation:** this repository is currently private, and GitHub branch
-protection / ruleset enforcement on private repositories may require a paid or
-team plan. Until such enforcement is configured, a failing
-`verify-architecture-invariants` check is visible on the PR but does **not**
-technically block the merge button. The remote gate is therefore *advisory*
-until branch protection is enabled — at which point it becomes merge-blocking
-by selecting `verify-architecture-invariants` as a required status check.
+The active ruleset enforces:
 
-### Branch Protection Setup
+- Pull request required before merging (direct pushes to `main` are blocked)
+- Required status check: `verify-architecture-invariants`, with the strict
+  up-to-date policy (the gate re-runs against the true merge result)
+- Linear history required
+- No force pushes, no branch deletion
+- No bypass actors — there is no admin escape hatch
 
-**Required status check name (exact):** `verify-architecture-invariants`
+**Proven by red-gate test:** enforcement was verified end-to-end with a
+deliberate violation
+([PR #7](https://github.com/vigneshsharma190-afk/Mad/pull/7)). A throwaway
+branch introduced a Gate 5 authorization-bypass pattern; the
+`verify-architecture-invariants` check failed and GitHub reported the PR as
+`mergeStateStatus: BLOCKED`. The test PR was closed without merging and the
+branch deleted. The local gate caught the same violation pre-commit, so both
+enforcement layers fired on the same input.
+
+### Required status check reference
+
+**Exact check name:** `verify-architecture-invariants`
 
 This is the job ID in `.github/workflows/enterprise-agent-gate.yml`; the job
 has no display-name override, so GitHub registers the check run under the job
-ID (confirmed via the check-runs API). Do **not** enter the workflow name
-(`Enterprise Multi-Agent Integrity Gate`) — required checks match on the
-job-level check-run name.
+ID (confirmed via the check-runs API). If the ruleset is ever recreated, use
+this name — not the workflow name (`Enterprise Multi-Agent Integrity Gate`);
+required checks match on the job-level check-run name.
 
-Recommended protection settings for `main`
-(**Settings → Branches → Add branch protection rule**, pattern `main`):
-
-- ✅ Require a pull request before merging (this alone stops direct pushes,
-  which the workflow cannot see)
-- ✅ Require status checks to pass before merging → add
-  `verify-architecture-invariants`
-- ✅ Require branches to be up to date before merging (re-runs the gate
-  against the true merge result, not a stale base)
-- ✅ Do not allow bypassing the above settings (otherwise admin merges skip
-  every gate)
-- ✅ Restrict force pushes and deletions
-
-Until protection is enabled, the manual discipline below is the only
-enforcement: a red `verify-architecture-invariants` check is visible on the
-PR but the merge button stays active, and direct pushes to `main` receive no
-verification at all.
-
-**Verifying enforcement after enabling protection:** open a throwaway branch,
-add a line matching one of Gate 5's forbidden patterns — e.g. assign the
-value `true` to the `bypassBillingVerification` flag in a source file — push,
-and open a PR. The check must fail **and** the merge button must be disabled
-with "Required statuses must pass". Close the PR and delete the branch
-without merging. If the button stays active, the check name in the rule does
-not match `verify-architecture-invariants` exactly.
+**Re-verifying enforcement** (after any ruleset change): open a throwaway
+branch, add a line matching one of Gate 5's forbidden patterns — e.g. assign
+the value `true` to the `bypassBillingVerification` flag in a source file —
+push, and open a PR. The check must fail **and** the merge button must be
+disabled. Close the PR and delete the branch without merging. If the button
+stays active, the check name in the ruleset does not match
+`verify-architecture-invariants` exactly.
 
 (The forbidden string is deliberately not written out verbatim here: the CI
 gate scans the entire PR diff including documentation, and quoting it
 literally fails Gate 5 — which is itself a useful demonstration that the gate
 works.)
 
-### Mandatory workflow until remote enforcement is available
+### Standard change workflow
 
-Every change must follow this manual gate discipline — it is the human
-substitute for the consensus gatekeeping in §6.3:
+Remote enforcement does not replace local discipline — it is the backstop,
+not the first line. Every change still follows this workflow:
 
 1. Create a feature branch.
-2. Run `./bin/moe-verify.sh` locally.
+2. Run `./bin/moe-verify.sh` locally — mandatory before every commit.
 3. Push the branch.
 4. Open a PR into `main`.
 5. Confirm the `verify-architecture-invariants` check passes on the PR.
-6. Merge **only** after both the local gate and the PR check are green.
+6. Merge only after both the local gate and the PR check are green.
 
-**Do not push directly to `main`** except for emergency recovery. The workflow
-triggers on `pull_request` events only, so a direct push to `main` receives
-zero automated verification and violates invariant #8.
+Direct pushes to `main` are now rejected by the ruleset, so the PR path is
+the only path. Emergency recovery requires deliberately editing the ruleset
+first — an intentionally heavy step.
