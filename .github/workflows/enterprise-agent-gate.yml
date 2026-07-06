@@ -1,0 +1,109 @@
+name: Enterprise Multi-Agent Integrity Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+      - release/*
+
+permissions:
+  contents: read
+
+jobs:
+  verify-architecture-invariants:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Production Node.js Environment
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+
+      - name: Resolve Workspace Toolchains
+        if: ${{ hashFiles('package-lock.json') != '' }}
+        run: npm ci
+
+      - name: Gate 1 - Strict Type Completeness & Lint Compliance
+        if: ${{ hashFiles('package.json') != '' }}
+        run: |
+          echo "Running type safety and linting verification loops..."
+          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+            npm run build || { echo "Gate 1 Failure: Source code compilation regressions detected."; exit 1; }
+          else
+            echo "Gate 1 Notice: no 'build' script declared — compilation gate skipped explicitly."
+          fi
+          if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then
+            npm run lint || { echo "Gate 1 Failure: Coding standard or linter violations found."; exit 1; }
+          else
+            echo "Gate 1 Notice: no 'lint' script declared — lint gate skipped explicitly."
+          fi
+
+      - name: Gate 2 - High-Entropy Credential & Secret Scanning
+        run: |
+          echo "Scanning code diff for exposed cryptographic credentials..."
+          if git diff "origin/${{ github.base_ref }}...HEAD" \
+            | grep -E -q '^\+.*(sk_live_[0-9a-zA-Z]{10,}|sk-ant-[0-9a-zA-Z_-]{10,}|AIzaSy[0-9A-Za-z_-]{20,}|xoxb-[0-9A-Za-z-]{10,}|xapp-[0-9A-Za-z-]{10,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(postgres|postgresql|mysql|mongodb(\+srv)?|redis|amqp)://[^/\s:@]+:[^@\s]+@|DATABASE_URL=.*://.*:.*@)'; then
+            echo "Gate 2 Failure: High-entropy system secret or credentials exposed in the integration diff."
+            exit 1
+          fi
+          echo "Gate 2 Passed: no live credentials detected in diff."
+
+      - name: Gate 3 - Zero-Downtime Database Migration Sanity
+        run: |
+          echo "Auditing database migration scripts for breaking state operations..."
+          UNSAFE=$(git diff "origin/${{ github.base_ref }}...HEAD" -- 'prisma/migrations/**/*.sql' 'migrations/**/*.sql' 'db/migrations/**/*.sql' \
+            | grep -E -i '^\+.*(DROP COLUMN|DROP TABLE|ALTER TABLE .* ALTER COLUMN .* SET NOT NULL|RENAME TO)' \
+            | grep -v -i -- '-- moe:expand-contract' || true)
+          if [ -n "$UNSAFE" ]; then
+            echo "Gate 3 Failure: Unsafe, breaking database migration command detected."
+            echo "Use expand-and-contract patterns; annotate deliberate contract steps with '-- moe:expand-contract'."
+            echo "$UNSAFE"
+            exit 1
+          fi
+          echo "Gate 3 Passed: no breaking migration operations detected."
+
+      - name: Gate 4 - Row Level Security Enforcement
+        run: |
+          echo "Verifying data persistence schemas against row level security policies..."
+          if [ ! -f prisma/schema.prisma ]; then
+            echo "Gate 4 Notice: no prisma/schema.prisma present — RLS gate skipped explicitly."
+            exit 0
+          fi
+          MODIFIED_ENTITIES=$(git diff "origin/${{ github.base_ref }}...HEAD" -- prisma/schema.prisma \
+            | grep -E '^\+model ' | awk '{print $2}' || true)
+          shopt -s globstar nullglob
+          for entity in $MODIFIED_ENTITIES; do
+            echo "Analyzing security layout for database entity: $entity"
+            if ! grep -q -E "ALTER TABLE \"$entity\" ENABLE ROW LEVEL SECURITY;" prisma/migrations/**/*.sql; then
+              echo "Gate 4 Failure: Model '$entity' added without an explicit Row Level Security migration."
+              exit 1
+            fi
+            for action in SELECT INSERT UPDATE DELETE; do
+              if ! grep -q -i -E "CREATE POLICY .* ON \"?$entity\"?.* FOR $action" prisma/migrations/**/*.sql; then
+                echo "Gate 4 Failure: Model '$entity' lacks a CREATE POLICY statement covering $action."
+                exit 1
+              fi
+            done
+          done
+          echo "Gate 4 Passed: all new entities carry RLS migrations and full policy coverage."
+
+      - name: Gate 5 - Multi-Tenant Authorization Constraints
+        run: |
+          echo "Auditing client isolation and payment locks across changed features..."
+          if git diff "origin/${{ github.base_ref }}...HEAD" \
+            | grep -E -q '^\+.*(bypassBillingVerification\s*=\s*true|bypassTenantIsolation\s*=\s*true|skipAuthCheck\s*=\s*true|SKIP_TENANT_ISOLATION\s*=\s*(true|1))'; then
+            echo "Gate 5 Failure: Security invariant broken. Unauthorized override of multi-tenant isolation or billing authorization rules."
+            exit 1
+          fi
+          echo "Gate 5 Passed: no authorization bypass patterns detected."
+
+      - name: Global Architectural Certification
+        run: echo "All autonomous enterprise engineering guardrails, invariants, and compliance gates passed successfully."

@@ -1,0 +1,26 @@
+# Environment & credentials — never track
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+coverage/
+
+# Caches & temp
+.cache/
+*.tmp
+*.log
+.DS_Store
+
+# MOE runtime state
+.moe/circuit_breaker.json
