@@ -327,3 +327,37 @@ Run the local gate before every commit:
 
 A merge is legal only when **both** engines return green and all consensus
 tokens (§6.3) are present.
+
+---
+
+## 8. Current Enforcement State
+
+**Verified working:** the `Enterprise Multi-Agent Integrity Gate` workflow runs
+successfully on every pull request into `main`, `master`, or `release/*`. The
+exact status check name reported on PRs is **`verify-architecture-invariants`**
+(first confirmed passing on
+[PR #1](https://github.com/vigneshsharma190-afk/Mad/pull/1)).
+
+**Known limitation:** this repository is currently private, and GitHub branch
+protection / ruleset enforcement on private repositories may require a paid or
+team plan. Until such enforcement is configured, a failing
+`verify-architecture-invariants` check is visible on the PR but does **not**
+technically block the merge button. The remote gate is therefore *advisory*
+until branch protection is enabled — at which point it becomes merge-blocking
+by selecting `verify-architecture-invariants` as a required status check.
+
+### Mandatory workflow until remote enforcement is available
+
+Every change must follow this manual gate discipline — it is the human
+substitute for the consensus gatekeeping in §6.3:
+
+1. Create a feature branch.
+2. Run `./bin/moe-verify.sh` locally.
+3. Push the branch.
+4. Open a PR into `main`.
+5. Confirm the `verify-architecture-invariants` check passes on the PR.
+6. Merge **only** after both the local gate and the PR check are green.
+
+**Do not push directly to `main`** except for emergency recovery. The workflow
+triggers on `pull_request` events only, so a direct push to `main` receives
+zero automated verification and violates invariant #8.
