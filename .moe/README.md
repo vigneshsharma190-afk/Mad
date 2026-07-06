@@ -380,12 +380,17 @@ PR but the merge button stays active, and direct pushes to `main` receive no
 verification at all.
 
 **Verifying enforcement after enabling protection:** open a throwaway branch,
-add a line matching a forbidden pattern (e.g.
-`bypassBillingVerification = true` in a non-markdown file), push, and open a
-PR. The check must fail **and** the merge button must be disabled with
-"Required statuses must pass". Close the PR and delete the branch without
-merging. If the button stays active, the check name in the rule does not
-match `verify-architecture-invariants` exactly.
+add a line matching one of Gate 5's forbidden patterns — e.g. assign the
+value `true` to the `bypassBillingVerification` flag in a source file — push,
+and open a PR. The check must fail **and** the merge button must be disabled
+with "Required statuses must pass". Close the PR and delete the branch
+without merging. If the button stays active, the check name in the rule does
+not match `verify-architecture-invariants` exactly.
+
+(The forbidden string is deliberately not written out verbatim here: the CI
+gate scans the entire PR diff including documentation, and quoting it
+literally fails Gate 5 — which is itself a useful demonstration that the gate
+works.)
 
 ### Mandatory workflow until remote enforcement is available
 
