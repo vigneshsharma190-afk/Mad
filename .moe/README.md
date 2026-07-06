@@ -351,6 +351,47 @@ technically block the merge button. The remote gate is therefore *advisory*
 until branch protection is enabled — at which point it becomes merge-blocking
 by selecting `verify-architecture-invariants` as a required status check.
 
+### Branch Protection Setup
+
+**Required status check name (exact):** `verify-architecture-invariants`
+
+This is the job ID in `.github/workflows/enterprise-agent-gate.yml`; the job
+has no display-name override, so GitHub registers the check run under the job
+ID (confirmed via the check-runs API). Do **not** enter the workflow name
+(`Enterprise Multi-Agent Integrity Gate`) — required checks match on the
+job-level check-run name.
+
+Recommended protection settings for `main`
+(**Settings → Branches → Add branch protection rule**, pattern `main`):
+
+- ✅ Require a pull request before merging (this alone stops direct pushes,
+  which the workflow cannot see)
+- ✅ Require status checks to pass before merging → add
+  `verify-architecture-invariants`
+- ✅ Require branches to be up to date before merging (re-runs the gate
+  against the true merge result, not a stale base)
+- ✅ Do not allow bypassing the above settings (otherwise admin merges skip
+  every gate)
+- ✅ Restrict force pushes and deletions
+
+Until protection is enabled, the manual discipline below is the only
+enforcement: a red `verify-architecture-invariants` check is visible on the
+PR but the merge button stays active, and direct pushes to `main` receive no
+verification at all.
+
+**Verifying enforcement after enabling protection:** open a throwaway branch,
+add a line matching one of Gate 5's forbidden patterns — e.g. assign the
+value `true` to the `bypassBillingVerification` flag in a source file — push,
+and open a PR. The check must fail **and** the merge button must be disabled
+with "Required statuses must pass". Close the PR and delete the branch
+without merging. If the button stays active, the check name in the rule does
+not match `verify-architecture-invariants` exactly.
+
+(The forbidden string is deliberately not written out verbatim here: the CI
+gate scans the entire PR diff including documentation, and quoting it
+literally fails Gate 5 — which is itself a useful demonstration that the gate
+works.)
+
 ### Mandatory workflow until remote enforcement is available
 
 Every change must follow this manual gate discipline — it is the human
