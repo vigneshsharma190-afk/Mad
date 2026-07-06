@@ -21,6 +21,9 @@ These rules are mandatory for every session.
 ## Verification discipline
 
 - Run `./bin/moe-verify.sh` before every commit.
+- Run `./bin/moe-verify.sh --full` for a whole-repository invariant sweep
+  (all tracked + untracked files, not just the diff) — use it after adopting
+  MOE in an existing codebase, after merges, or as a periodic audit.
 - Never commit or push if `./bin/moe-verify.sh` fails (exit code 1).
   Exit code 2 means the environment cannot be verified — resolve that before
   proceeding, don't treat it as a pass.
