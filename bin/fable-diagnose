@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# fable-diagnose — FWM Stage 5: live-state diagnosis (Move 4 / FWM-2).
+#
+# Walks a failed external operation through the FWM-2 sequence, requiring an
+# answer at each step before showing the next. The sequence's two hard rules
+# are enforced by the tool, not by the operator's discipline:
+#
+#   - Step 4: if a retry would carry NO new information, the tool's verdict
+#     is DO-NOT-RETRY. Retrying verbatim is never offered.
+#   - Step 5: if the failure is an authorization boundary, the tool STOPS
+#     and emits a handoff for the resource owner. It will never suggest a
+#     credential workaround — ownership boundaries end diagnosis by design.
+#
+# Modes:
+#   Interactive:  fable-diagnose             (prompts on stdin)
+#   Scripted:     fable-diagnose --answers <file>
+#                 (file = one answer per line, for replay/testing)
+#
+# Answers expected, in order:
+#   1. exact error text (paste, not paraphrase)
+#   2. live-state query command you ran + what it returned
+#   3. what changed since it last worked ("never worked" is valid)
+#   4. what NEW information a retry would carry ("none" is valid)
+#   5. is this an authorization/ownership boundary? (yes/no)
+#   6. [only if 5=yes] the exact command the resource owner must run
+#
+# Read-only. Exit codes:
+#   0  diagnosis complete with a verdict (RETRY-WITH-CHANGES or HANDOFF)
+#   1  verdict is DO-NOT-RETRY (no new information — do not retry verbatim)
+#   2  arguments/answers unusable
+#
+# Spec: .fable/BUILD.md §2 Stage 5.
+#
+set -euo pipefail
+
+if [ -t 1 ]; then
+  RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+else
+  RED=""; GREEN=""; YELLOW=""; BOLD=""; RESET=""
+fi
+
+ANSWERS_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --answers) ANSWERS_FILE="${2:-}"; shift 2 ;;
+    -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -n "$ANSWERS_FILE" ]; then
+  [ -r "$ANSWERS_FILE" ] || { printf 'Cannot read answers file: %s\n' "$ANSWERS_FILE" >&2; exit 2; }
+  exec 3< "$ANSWERS_FILE"
+else
+  exec 3<&0
+fi
+
+ask() {
+  # $1 = step label, $2 = question. Requires a non-empty answer.
+  local reply=""
+  printf '%s%s%s\n  %s\n' "$BOLD" "$1" "$RESET" "$2"
+  while [ -z "$reply" ]; do
+    printf '  > '
+    IFS= read -r reply <&3 || { printf '\n  (no answer provided — diagnosis cannot proceed)\n'; exit 2; }
+    [ -n "$reply" ] || printf '  (an answer is required before the next step is shown)\n'
+  done
+  [ -n "$ANSWERS_FILE" ] && printf '  %s\n' "$reply"
+  LAST="$reply"
+}
+
+printf '%s=== fable-diagnose ===%s\n' "$BOLD" "$RESET"
+printf 'One step at a time. Each answer unlocks the next step.\n\n'
+
+ask "Step 1 — the error, literally" \
+    "Paste the exact error text (not a paraphrase — the literal text):"
+ERROR_TEXT="$LAST"
+
+ask "Step 2 — live state, queried" \
+    "What live-state query did you run (API/header/status — never the local cache), and what did it return?"
+LIVE_STATE="$LAST"
+
+ask "Step 3 — the delta" \
+    "What changed since this last worked? ('never worked' is a valid answer)"
+DELTA="$LAST"
+
+ask "Step 4 — information test" \
+    "What NEW information would a retry carry? ('none' is a valid and important answer)"
+NEW_INFO="$LAST"
+
+ask "Step 5 — ownership test" \
+    "Is this an authorization/ownership boundary (credentials, scopes, permissions owned by someone else)? (yes/no)"
+IS_AUTH=$(printf '%s' "$LAST" | tr '[:upper:]' '[:lower:]')
+
+printf '\n%s--- VERDICT ---%s\n' "$BOLD" "$RESET"
+
+case "$IS_AUTH" in
+  y|yes)
+    ask "Step 6 — the handoff" \
+        "What is the exact command the resource owner must run?"
+    OWNER_CMD="$LAST"
+    printf '\n%s%sHANDOFF — diagnosis ends at the ownership boundary.%s\n' "$BOLD" "$YELLOW" "$RESET"
+    printf 'This tool will not suggest workarounds for credentials or permissions\n'
+    printf 'you do not own. Hand the owner this, then wait:\n\n'
+    printf '    %s\n\n' "$OWNER_CMD"
+    printf 'When the owner confirms, re-run the original operation — that retry\n'
+    printf 'carries new information (changed auth state) and is legitimate.\n'
+    exit 0
+    ;;
+esac
+
+NEW_INFO_LC=$(printf '%s' "$NEW_INFO" | tr '[:upper:]' '[:lower:]' | tr -d ' .')
+if [ "$NEW_INFO_LC" = "none" ] || [ "$NEW_INFO_LC" = "nothing" ] || [ "$NEW_INFO_LC" = "no" ]; then
+  printf '%s%sDO-NOT-RETRY — a retry would carry no new information.%s\n' "$BOLD" "$RED" "$RESET"
+  printf 'Retrying verbatim is hoping, not diagnosing. Go back to step 2 or 3:\n'
+  printf 'either the live state has something you have not queried yet, or the\n'
+  printf 'delta is not what you think it is.\n'
+  exit 1
+fi
+
+printf '%s%sRETRY-WITH-CHANGES — a retry is legitimate.%s\n' "$BOLD" "$GREEN" "$RESET"
+printf 'The retry carries new information: %s\n' "$NEW_INFO"
+printf 'Retry the operation with that change, and only that change, so the\n'
+printf 'result is attributable.\n'
+exit 0
