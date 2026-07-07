@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+#
+# fable-state — FWM Stage 1: look before touching (Move 1).
+#
+# Read-only snapshot of the facts every task should check before acting.
+# Performs ZERO writes. Queries live remote state where available (FWM-2)
+# and labels every fact as VERIFIED or UNVERIFIABLE — the two are never
+# conflated (FWM-3).
+#
+# Exit codes:
+#   0  state printed (individual facts may still be UNVERIFIABLE)
+#   2  environment cannot be inspected at all (not a git repository)
+#
+# Spec: .fable/BUILD.md §2 Stage 1.
+#
+set -euo pipefail
+
+if [ -t 1 ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; YELLOW=$'\033[33m'; RESET=$'\033[0m'
+else
+  BOLD=""; DIM=""; YELLOW=""; RESET=""
+fi
+
+fact()   { printf '%-22s %s\n' "$1" "$2"; }
+unver()  { printf '%-22s %sUNVERIFIABLE — %s%s\n' "$1" "$YELLOW" "$2" "$RESET"; }
+
+printf '%s=== fable-state ===%s\n' "$BOLD" "$RESET"
+
+# --- Local repository state (must exist; otherwise nothing is inspectable) --
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'UNVERIFIABLE — not a git repository. No facts can be reported.\n'
+  printf 'Nothing below this line would be trustworthy, so nothing is printed.\n'
+  exit 2
+}
+cd "$REPO_ROOT"
+
+fact "repository" "$REPO_ROOT"
+
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+  fact "head" "$(git rev-parse --short HEAD) — $(git log -1 --format=%s)"
+else
+  unver "head" "repository has no commits yet"
+fi
+
+BRANCH=$(git branch --show-current)
+if [ -n "$BRANCH" ]; then
+  fact "branch" "$BRANCH"
+else
+  fact "branch" "(detached HEAD)"
+fi
+
+DIRTY=$(git status --porcelain)
+if [ -z "$DIRTY" ]; then
+  fact "working tree" "clean"
+else
+  fact "working tree" "DIRTY — $(printf '%s\n' "$DIRTY" | wc -l | tr -d ' ') path(s):"
+  printf '%s\n' "$DIRTY" | sed "s/^/${DIM}                       /;s/\$/${RESET}/"
+fi
+
+# --- Live remote state (queried, never assumed; degrade to UNVERIFIABLE) ---
+
+REMOTE_URL=$(git remote get-url origin 2>/dev/null) || REMOTE_URL=""
+if [ -z "$REMOTE_URL" ]; then
+  unver "remote" "no 'origin' remote configured"
+else
+  fact "remote" "$REMOTE_URL"
+
+  if [ -n "$BRANCH" ] && git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+    REMOTE_SHA=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+    LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if [ "$REMOTE_SHA" = "$LOCAL_SHA" ]; then
+      fact "sync ($BRANCH)" "in sync with origin (live-queried: $(git rev-parse --short "$REMOTE_SHA"))"
+    else
+      fact "sync ($BRANCH)" "DIVERGED — local $(git rev-parse --short HEAD 2>/dev/null || echo '?') vs origin $(git rev-parse --short "$REMOTE_SHA" 2>/dev/null || echo "$REMOTE_SHA")"
+    fi
+  elif [ -n "$BRANCH" ]; then
+    if git ls-remote origin HEAD >/dev/null 2>&1; then
+      fact "sync ($BRANCH)" "branch not on origin (unpushed)"
+    else
+      unver "sync ($BRANCH)" "origin unreachable"
+    fi
+  else
+    unver "sync" "detached HEAD has no tracking branch"
+  fi
+fi
+
+# --- GitHub facts via gh (optional layer; each degrades independently) -----
+
+if command -v gh >/dev/null 2>&1 && [ -n "$REMOTE_URL" ]; then
+  if OPEN_PRS=$(gh pr list --state open --json number,title,headRefName \
+      --jq '.[] | "#\(.number) \(.title) [\(.headRefName)]"' 2>/dev/null); then
+    if [ -z "$OPEN_PRS" ]; then
+      fact "open PRs" "none"
+    else
+      fact "open PRs" ""
+      printf '%s\n' "$OPEN_PRS" | sed 's/^/                       /'
+    fi
+  else
+    unver "open PRs" "gh query failed (auth or network)"
+  fi
+
+  DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null) || DEFAULT_BRANCH=""
+  if [ -n "$DEFAULT_BRANCH" ]; then
+    if RULES=$(gh api "repos/{owner}/{repo}/rules/branches/$DEFAULT_BRANCH" \
+        --jq '[.[] | select(.type=="required_status_checks")] | .[0].parameters.required_status_checks[].context' 2>/dev/null); then
+      if [ -n "$RULES" ]; then
+        fact "required checks" "$(printf '%s' "$RULES" | tr '\n' ' ' | sed 's/ $//') (on $DEFAULT_BRANCH, live-queried)"
+      else
+        fact "required checks" "none configured on $DEFAULT_BRANCH (live-queried)"
+      fi
+    else
+      unver "required checks" "rules API query failed"
+    fi
+  else
+    unver "required checks" "could not resolve default branch"
+  fi
+else
+  unver "open PRs" "gh CLI unavailable or no remote"
+  unver "required checks" "gh CLI unavailable or no remote"
+fi
+
+exit 0
