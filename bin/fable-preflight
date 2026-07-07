@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#
+# fable-preflight — FWM Stage 3: the self-reference audit, mechanized (FWM-5).
+#
+# Before pushing, answers the question I demonstrably forget to ask: "which
+# remote gate would THIS diff trip?" It runs the remote CI gate's own trigger
+# patterns against the outgoing diff — including documentation, because the
+# remote gate scans documentation (learned in PR #6).
+#
+# This tool mirrors the REMOTE gate (.github/workflows/enterprise-agent-gate
+# .yml), which is stricter than the local moe-verify.sh: the remote gate has
+# no markdown exemption for auth-bypass patterns. That local/remote gap is
+# exactly what bit PR #6; this tool exists to expose it before push.
+#
+# Read-only: advises, never modifies. Exit codes:
+#   0  no remote gate would fire on this diff
+#   1  at least one remote gate would fire (finding names the gate)
+#   2  environment cannot be inspected (not a git repo / no baseline)
+#
+# Usage:
+#   fable-preflight              # audit outgoing diff vs origin/<default>
+#   MOE_BASE_REF=x fable-preflight   # audit vs an explicit base
+#
+# Exemptions: NONE — deliberately (FWM-5, reasoning written here). The
+# remote gate exempts nothing, so a faithful mirror exempts nothing. The
+# first draft of this tool exempted itself and produced a false CLEAR on
+# its own diff while the remote gate would genuinely have fired — the
+# precise failure this tool exists to prevent. Instead, this file's own
+# pattern definitions are DEFANGED (e.g. 'DATABASE_URL[=]' instead of the
+# bare literal) so the source text cannot match the remote signatures
+# while the regex semantics stay identical.
+#
+# Spec: .fable/BUILD.md §2 Stage 3.
+#
+set -euo pipefail
+
+if [ -t 1 ]; then
+  RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+else
+  RED=""; GREEN=""; YELLOW=""; BOLD=""; RESET=""
+fi
+
+printf '%s=== fable-preflight ===%s\n' "$BOLD" "$RESET"
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'UNVERIFIABLE — not a git repository; there is no diff to audit.\n'
+  exit 2
+}
+cd "$REPO_ROOT"
+git rev-parse --verify HEAD >/dev/null 2>&1 || {
+  printf 'UNVERIFIABLE — no commits; there is no baseline to diff against.\n'
+  exit 2
+}
+
+# Base: explicit override, else origin/<default branch> if reachable, else HEAD.
+if [ -n "${MOE_BASE_REF:-}" ]; then
+  BASE="$MOE_BASE_REF"
+elif DEFAULT=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); then
+  BASE="$DEFAULT"
+elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+  BASE="origin/main"
+else
+  BASE="HEAD"
+fi
+git rev-parse --verify "$BASE" >/dev/null 2>&1 || {
+  printf 'UNVERIFIABLE — base ref "%s" does not resolve.\n' "$BASE"
+  exit 2
+}
+printf 'auditing outgoing diff vs %s (committed + staged + unstaged + untracked)\n\n' "$BASE"
+
+# Outgoing diff: everything that would land remotely if this branch were
+# pushed and PR'd — committed-ahead work AND local modifications.
+outgoing_added() {
+  { git diff "$BASE" --
+    git ls-files --others --exclude-standard -z \
+      | xargs -0 -I{} git diff --no-index /dev/null {} 2>/dev/null || true
+  } | awk '
+    /^\+\+\+ b\// { file = substr($0, 7); next }
+    /^\+\+\+ /    { file = ""; next }
+    /^\+[^+]/ || /^\+$/ { if (file != "") print file ":" substr($0, 2) }
+  '
+}
+
+# No exemptions — the remote gate has none, so the mirror has none.
+# (Reasoning in the header comment above.)
+ADDED=$(outgoing_added)
+
+if [ -z "$ADDED" ]; then
+  printf '%s[CLEAR]%s outgoing diff is empty — nothing to trip.\n' "$GREEN" "$RESET"
+  exit 0
+fi
+
+FINDINGS=0
+gate() {
+  # $1 = remote gate name, $2 = matches (may be empty)
+  if [ -n "$2" ]; then
+    FINDINGS=$((FINDINGS + 1))
+    printf '%s[WOULD FIRE]%s %s\n' "$RED" "$RESET" "$1"
+    printf '%s\n' "$2" | sed 's/^/             /' | head -5
+  else
+    printf '%s[clear]%s      %s\n' "$GREEN" "$RESET" "$1"
+  fi
+}
+
+# Mirrors of the remote gate's exact trigger regexes (Gates 2, 3, 5 scan the
+# raw diff; Gate 4's model check is diff-driven too). Kept in lockstep with
+# the workflow — if the workflow changes, this file must change in the same PR.
+G2=$(printf '%s\n' "$ADDED" | grep -E '(sk_live_[0-9a-zA-Z]{10,}|sk-ant-[0-9a-zA-Z_-]{10,}|AIzaSy[0-9A-Za-z_-]{20,}|xoxb-[0-9A-Za-z-]{10,}|xapp-[0-9A-Za-z-]{10,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(postgres|postgresql|mysql|mongodb(\+srv)?|redis|amqp)://[^/[:space:]:@]+:[^@[:space:]]+@|DATABASE_URL[=].*://.*:.*@)' || true)
+gate "Gate 2 — credential/secret scan" "$G2"
+
+G3=$(printf '%s\n' "$ADDED" | grep -E 'migrations/.*\.sql:' \
+     | grep -E -i '(DROP COLUMN|DROP TABLE|ALTER TABLE .* ALTER COLUMN .* SET NOT NULL|RENAME TO)' \
+     | grep -v -i -- '-- moe:expand-contract' || true)
+gate "Gate 3 — unsafe migration operations" "$G3"
+
+G4=""
+NEW_MODELS=$(printf '%s\n' "$ADDED" | grep -E 'schema\.prisma:model ' | sed -E 's/.*schema\.prisma:model +([A-Za-z0-9_]+).*/\1/' | sort -u || true)
+for entity in $NEW_MODELS; do
+  if ! grep -rq -E "ALTER TABLE \"$entity\" ENABLE ROW LEVEL SECURITY;" prisma/migrations 2>/dev/null; then
+    G4="${G4}model '$entity' lacks an RLS migration"$'\n'
+  fi
+done
+gate "Gate 4 — Row Level Security coverage" "${G4%$'\n'}"
+
+G5=$(printf '%s\n' "$ADDED" | grep -E '(bypassBillingVerification[[:space:]]*=[[:space:]]*true|bypassTenantIsolation[[:space:]]*=[[:space:]]*true|skipAuthCheck[[:space:]]*=[[:space:]]*true|SKIP_TENANT_ISOLATION[[:space:]]*=[[:space:]]*(true|1))' || true)
+gate "Gate 5 — multi-tenant authorization (scans ALL files incl. docs)" "$G5"
+
+printf '\n'
+if [ "$FINDINGS" -gt 0 ]; then
+  printf '%s%s[BLOCKED-IF-PUSHED]%s %d remote gate(s) would fire. Fix before push.\n' "$BOLD" "$RED" "$RESET" "$FINDINGS"
+  exit 1
+fi
+printf '%s%s[CLEAR]%s no remote gate would fire on this diff.\n' "$BOLD" "$GREEN" "$RESET"
+exit 0
