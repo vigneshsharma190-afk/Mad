@@ -32,14 +32,20 @@ Sources swept for prose rules: `CLAUDE.md`, `.moe/README.md` §3/§8,
 | 15 | Fixtures contain fake values only | .fable/BUILD.md §3.4 | Partially mechanized: Gate 2 patterns would catch realistic-format secrets in tracked fixtures; fake-but-plausible values rely on prose | Gate 2 proofs (row 4) cover the credential-shaped subset |
 | 16 | Load the matching agent profile before role-scoped work | CLAUDE.md | Tool scoping in `.claude/agents/*` frontmatter binds *spawned* subagents; the main session honoring profiles is prose only | Frontmatter is declarative config; unexercised — no subagent spawned in anger yet |
 | 17 | Read `.moe/README.md` before planning or editing | CLAUDE.md | none yet — prose only, will be bent | — (caught by this ledger's own first-run sweep — the row you are reading exists because the cross-check found it missing) |
+| 18 | No schema change without matching migration files | .moe §3 inv.3 | `moe-verify.sh` Gate 3 — local only; the remote CI gate has **no** lockstep counterpart | fable-proof PROVEN run (acceptance, 2026-07-11): schema-change-with-migration passed, schema-change-without failed on Gate 3. Row exists because the acceptance-item-6 sweep caught it missing — the ledger's second self-catch |
+| 19 | Subagent files in `.claude/agents/` must match their `.moe/profiles/` profile; profile wins on divergence | CLAUDE.md | none yet — prose only, will be bent | — (caught by the acceptance-item-6 sweep) |
+| 20 | FWM components are read-only outside their own fixture dirs; nothing modifies `.moe/`, app code, or git state | .fable/BUILD.md §3.2 | none yet — prose only, will be bent | — (caught by the acceptance-item-6 sweep; held so far by code review of PRs #10–#15) |
 
 ## Reading this honestly
 
-Rows 10–14 are the ledger's point: the repository's own working discipline —
-verify-before-commit, preflight-before-push, one-stage-per-PR — is currently
+Rows 10–14 and 19–20 are the ledger's point: the repository's own working
+discipline — verify-before-commit, preflight-before-push, one-stage-per-PR,
+subagent/profile consistency, component read-only-ness — is currently
 **unenforced prose**, held up only by the operator behaving well. The
 remote ruleset (rows 1–2) is what actually protects `main` when that
-behavior lapses.
+behavior lapses. Row 18 is narrower but real: invariant #3 is enforced
+locally only, so a direct-to-PR change skipping the local gate would reach
+CI with no lockstep check at all.
 
 Closing a prose-only row means building its mechanism (a pre-commit hook for
 row 10/11, a pre-push hook for row 13, a CI shape-check for row 14), proving

@@ -223,3 +223,12 @@ Each item is a both-directions proof, so the acceptance run is itself the
 final FWM-1 exercise. Until all six pass, the honest status of this system
 is: **specified, not built** — exactly the distinction MOE's documentation
 had to learn the hard way, applied to my own framework from day one.
+
+**Status (2026-07-11): built.** The composite acceptance run passed all six
+items in both directions — the full record (commands, verbatim output, exit
+codes) is in `.fable/ACCEPTANCE.md`. Item 6 caught three rules missing from
+the exile ledger during the run itself — including a live mechanism with no
+row (invariant #3, now proven and registered as row 18) — which is the
+sweep demonstrating its FAIL direction on real input, not a staged fixture.
+What remains open is recorded in the ledger, not here: the discipline of
+*running* these tools is still prose-only (rows 10–14).
